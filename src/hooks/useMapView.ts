@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl, { GeolocateControl } from "maplibre-gl";
+import * as turf from "@turf/turf";
 import {
   DEFAULT_CENTER,
   DEFAULT_ZOOM,
   SAMPLE_AREA_FEATURE,
-  SAMPLE_AREA_FILL,
-  SAMPLE_AREA_OUTLINE,
-  SAMPLE_MARKER_COLOR,
   SAMPLE_ROUTE,
   SAMPLE_ROUTE_COLOR,
+  SAMPLE_MARKER_COLOR,
+  SAMPLE_AREA_FILL,
+  SAMPLE_AREA_OUTLINE,
   USER_MARKER_COLOR,
   getMapStyle,
 } from "../lib/mapUtils";
@@ -23,6 +24,9 @@ export default function useMapView() {
   const [status, setStatus] = useState<MapStatus>("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [userLocated, setUserLocated] = useState(false);
+
+  // Store user location once geolocated
+  const userLocationRef = useRef<[number, number] | null>(null);
 
   const sampleIndexRef = useRef(0);
   const sampleIntervalRef = useRef<number | null>(null);
@@ -40,6 +44,7 @@ export default function useMapView() {
     mapRef.current = map;
 
     const addSourcesAndLayers = () => {
+      // Source for user location
       map.addSource("user-location", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
@@ -56,12 +61,10 @@ export default function useMapView() {
         },
       });
 
+      // Source for sample area (initially empty, will set later)
       map.addSource("sample-area", {
         type: "geojson",
-        data: {
-          type: "FeatureCollection",
-          features: [SAMPLE_AREA_FEATURE],
-        },
+        data: { type: "FeatureCollection", features: [] },
       });
       map.addLayer({
         id: "sample-area-fill",
@@ -82,6 +85,7 @@ export default function useMapView() {
         },
       });
 
+      // Source for sample route / runner
       map.addSource("sample-trail", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
@@ -114,11 +118,62 @@ export default function useMapView() {
       });
     };
 
-    const startSampleRunner = () => {
+    const translateSampleGeometries = (userLngLat: [number, number]) => {
+      const [userLng, userLat] = userLngLat;
+
+      // --- Translate SAMPLE_AREA_FEATURE relative to user ---
+      // Use Turf: shift coordinates so the SAMPLE_AREA centroid matches user position
+      const areaFeature = SAMPLE_AREA_FEATURE;
+
+      // Compute centroid of sample-area original
+      const originalCentroid = turf.centroid(areaFeature).geometry.coordinates as [number, number];
+      const dx = userLng - originalCentroid[0];
+      const dy = userLat - originalCentroid[1];
+
+      // Move all coordinates by (dx, dy)
+      const movedArea = turf.transformTranslate(areaFeature, 0, 0, {
+        mutate: false,
+      }); // we will manually move
+
+      const movedCoords = (areaFeature.geometry.coordinates as any).map((poly: any) =>
+        poly.map((coord: number[]) => [coord[0] + dx, coord[1] + dy])
+      );
+
+      movedArea.geometry.coordinates = movedCoords;
+
+      // --- Translate SAMPLE_ROUTE relative to user ---
+      const movedRoute = SAMPLE_ROUTE.map((coord) => {
+        const [origLng, origLat] = coord;
+        return [origLng + dx, origLat + dy] as [number, number];
+      });
+
+      // Update map sources
+      const areaSrc = map.getSource("sample-area") as maplibregl.GeoJSONSource;
+      areaSrc.setData({
+        type: "FeatureCollection",
+        features: [movedArea],
+      });
+
+      const trailSrc = map.getSource("sample-trail") as maplibregl.GeoJSONSource;
+      trailSrc.setData({
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: { type: "LineString", coordinates: movedRoute },
+            properties: {},
+          },
+        ],
+      });
+
+      return movedRoute;
+    };
+
+    const startSampleRunner = (translatedRoute: [number, number][]) => {
       const updateRunner = () => {
-        const next = (sampleIndexRef.current + 1) % SAMPLE_ROUTE.length;
+        const next = (sampleIndexRef.current + 1) % translatedRoute.length;
         sampleIndexRef.current = next;
-        const coords = SAMPLE_ROUTE[next];
+        const coords = translatedRoute[next];
 
         const runnerSrc = map.getSource("sample-runner") as maplibregl.GeoJSONSource;
         const trailSrc = map.getSource("sample-trail") as maplibregl.GeoJSONSource;
@@ -128,7 +183,7 @@ export default function useMapView() {
           features: [{ type: "Feature", geometry: { type: "Point", coordinates: coords }, properties: {} }],
         });
 
-        const traversed = SAMPLE_ROUTE.slice(0, next + 1);
+        const traversed = translatedRoute.slice(0, next + 1);
         trailSrc.setData({
           type: "FeatureCollection",
           features: [
@@ -141,6 +196,7 @@ export default function useMapView() {
         });
       };
 
+      // First update immediately
       updateRunner();
       sampleIntervalRef.current = window.setInterval(updateRunner, 600);
     };
@@ -156,15 +212,24 @@ export default function useMapView() {
 
     geolocateControl.on("geolocate", (evt) => {
       const { longitude, latitude } = evt.coords;
-      const coords: [number, number] = [longitude, latitude];
+      const userCoords: [number, number] = [longitude, latitude];
+      userLocationRef.current = userCoords;
+
+      // Update user-location source
       const src = map.getSource("user-location") as maplibregl.GeoJSONSource;
       src.setData({
         type: "FeatureCollection",
-        features: [{ type: "Feature", geometry: { type: "Point", coordinates: coords }, properties: {} }],
+        features: [{ type: "Feature", geometry: { type: "Point", coordinates: userCoords }, properties: {} }],
       });
 
       setUserLocated(true);
-      map.flyTo({ center: coords, zoom: 16, speed: 0.5 });
+      map.flyTo({ center: userCoords, zoom: 16, speed: 0.5 });
+
+      // Translate sample geometries around user
+      const translatedRoute = translateSampleGeometries(userCoords);
+
+      // Start runner only after translation
+      startSampleRunner(translatedRoute);
     });
 
     geolocateControl.on("error", (err) => {
@@ -177,32 +242,20 @@ export default function useMapView() {
       addSourcesAndLayers();
     });
 
-    // Wait until user has located to start runner
-    const runnerWatcher = setInterval(() => {
-      if (userLocated) {
-        startSampleRunner();
-        clearInterval(runnerWatcher);
-      }
-    }, 500);
-
     return () => {
       if (sampleIntervalRef.current) window.clearInterval(sampleIntervalRef.current);
-      clearInterval(runnerWatcher);
       map.remove();
     };
-  }, [userLocated]);
+  }, []);
 
   return {
     mapContainer,
     status,
     errorMessage,
     userLocated,
+    // expose trigger to MapView to programmatically geolocate
     triggerLocate: () => {
       geolocateControlRef.current?.trigger();
     },
   } as const;
 }
-
-// function emptyCollection(): GeoJSON.FeatureCollection {
-//   return { type: "FeatureCollection", features: [] };
-// }
