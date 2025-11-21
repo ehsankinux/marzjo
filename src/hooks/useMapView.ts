@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import maplibregl from "maplibre-gl";
+import maplibregl, { GeolocateControl } from "maplibre-gl";
 import {
   DEFAULT_CENTER,
   DEFAULT_ZOOM,
@@ -18,19 +18,14 @@ type MapStatus = "loading" | "ready" | "error";
 export default function useMapView() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const geolocateControlRef = useRef<GeolocateControl | null>(null);
+
   const [status, setStatus] = useState<MapStatus>("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const hasCenteredUserRef = useRef(false);
-  const watchIdRef = useRef<number | null>(null);
-
-  // New flag: did we get a “good enough” first user fix
   const [userLocated, setUserLocated] = useState(false);
 
   const sampleIndexRef = useRef(0);
   const sampleIntervalRef = useRef<number | null>(null);
-
-  // … (permission check effect stays the same) …
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -45,8 +40,10 @@ export default function useMapView() {
     mapRef.current = map;
 
     const addSourcesAndLayers = () => {
-      // Add user location source + layer first
-      map.addSource("user-location", { type: "geojson", data: emptyCollection() });
+      map.addSource("user-location", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "user-location-circle",
         type: "circle",
@@ -59,7 +56,6 @@ export default function useMapView() {
         },
       });
 
-      // Then sample area
       map.addSource("sample-area", {
         type: "geojson",
         data: {
@@ -86,8 +82,10 @@ export default function useMapView() {
         },
       });
 
-      // Prepare sample trail + runner, but *don't start updating runner yet*
-      map.addSource("sample-trail", { type: "geojson", data: emptyCollection() });
+      map.addSource("sample-trail", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "sample-trail-line",
         type: "line",
@@ -99,7 +97,10 @@ export default function useMapView() {
         },
       });
 
-      map.addSource("sample-runner", { type: "geojson", data: emptyCollection() });
+      map.addSource("sample-runner", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "sample-runner-circle",
         type: "circle",
@@ -113,110 +114,95 @@ export default function useMapView() {
       });
     };
 
-    const beginUserLocationWatch = () => {
-      if (!window.isSecureContext || !("geolocation" in navigator)) {
-        setErrorMessage("Cannot start geolocation: insecure context or geolocation unsupported");
-        return;
-      }
-
-      watchIdRef.current = navigator.geolocation.watchPosition(
-        (position) => {
-          setErrorMessage(null);
-          const { longitude, latitude, accuracy } = position.coords;
-          const coords: [number, number] = [longitude, latitude];
-          console.log("Location:", coords, "accuracy:", accuracy);
-
-          const src = map.getSource("user-location") as maplibregl.GeoJSONSource | undefined;
-          if (src) {
-            src.setData({
-              type: "FeatureCollection",
-              features: [{ type: "Feature", geometry: { type: "Point", coordinates: coords }, properties: {} }],
-            });
-          }
-
-          // If first “good” fix, center
-          const ACC_THRESHOLD = 100; // meters
-          if (!hasCenteredUserRef.current && accuracy <= ACC_THRESHOLD) {
-            hasCenteredUserRef.current = true;
-            map.flyTo({ center: coords, zoom: 16, speed: 0.5 });
-            setUserLocated(true); // we mark that location is “good enough”
-          }
-        },
-        (error) => {
-          console.error("Geolocation error:", error);
-          // same error handling as before…
-          if (error.code === error.PERMISSION_DENIED) {
-            setErrorMessage("Please allow location access to see your position on the map.");
-          } else if (error.code === error.POSITION_UNAVAILABLE) {
-            setErrorMessage("Location unavailable. Try moving to open area.");
-          } else if (error.code === error.TIMEOUT) {
-            setErrorMessage("Location request timed out. Trying again…");
-          } else {
-            setErrorMessage("Unable to fetch location.");
-          }
-        },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-      );
-    };
-
     const startSampleRunner = () => {
-      const update = () => {
+      const updateRunner = () => {
         const next = (sampleIndexRef.current + 1) % SAMPLE_ROUTE.length;
         sampleIndexRef.current = next;
         const coords = SAMPLE_ROUTE[next];
-        const runnerSrc = map.getSource("sample-runner") as maplibregl.GeoJSONSource | undefined;
-        const trailSrc = map.getSource("sample-trail") as maplibregl.GeoJSONSource | undefined;
-        if (runnerSrc) {
-          runnerSrc.setData({
-            type: "FeatureCollection",
-            features: [{ type: "Feature", geometry: { type: "Point", coordinates: coords }, properties: {} }],
-          });
-        }
-        if (trailSrc) {
-          const traversed = SAMPLE_ROUTE.slice(0, next + 1);
-          trailSrc.setData({
-            type: "FeatureCollection",
-            features: [{ type: "Feature", geometry: { type: "LineString", coordinates: traversed }, properties: {} }],
-          });
-        }
+
+        const runnerSrc = map.getSource("sample-runner") as maplibregl.GeoJSONSource;
+        const trailSrc = map.getSource("sample-trail") as maplibregl.GeoJSONSource;
+
+        runnerSrc.setData({
+          type: "FeatureCollection",
+          features: [{ type: "Feature", geometry: { type: "Point", coordinates: coords }, properties: {} }],
+        });
+
+        const traversed = SAMPLE_ROUTE.slice(0, next + 1);
+        trailSrc.setData({
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: { type: "LineString", coordinates: traversed },
+              properties: {},
+            },
+          ],
+        });
       };
 
-      update();
-      sampleIntervalRef.current = window.setInterval(update, 600);
+      updateRunner();
+      sampleIntervalRef.current = window.setInterval(updateRunner, 600);
     };
+
+    const geolocateControl = new GeolocateControl({
+      positionOptions: { enableHighAccuracy: true },
+      trackUserLocation: false,
+      showUserLocation: true,
+      fitBoundsOptions: { maxZoom: 16 },
+    });
+    geolocateControlRef.current = geolocateControl;
+    map.addControl(geolocateControl, "top-right");
+
+    geolocateControl.on("geolocate", (evt) => {
+      const { longitude, latitude } = evt.coords;
+      const coords: [number, number] = [longitude, latitude];
+      const src = map.getSource("user-location") as maplibregl.GeoJSONSource;
+      src.setData({
+        type: "FeatureCollection",
+        features: [{ type: "Feature", geometry: { type: "Point", coordinates: coords }, properties: {} }],
+      });
+
+      setUserLocated(true);
+      map.flyTo({ center: coords, zoom: 16, speed: 0.5 });
+    });
+
+    geolocateControl.on("error", (err) => {
+      console.error("GeolocateControl error:", err);
+      setErrorMessage("Unable to get your location. Please allow location access.");
+    });
 
     map.on("load", () => {
       setStatus("ready");
       addSourcesAndLayers();
-      beginUserLocationWatch();
     });
 
-    // Wait for userLocated = true, then start runner
-    const runnerInterval = setInterval(() => {
+    // Wait until user has located to start runner
+    const runnerWatcher = setInterval(() => {
       if (userLocated) {
         startSampleRunner();
-        clearInterval(runnerInterval);
+        clearInterval(runnerWatcher);
       }
     }, 500);
 
-    map.on("error", (e) => {
-      console.error("Map error:", (e as any).error || e);
-      setStatus("error");
-      setErrorMessage("Map failed to load. Please refresh.");
-    });
-
     return () => {
-      if (sampleIntervalRef.current != null) window.clearInterval(sampleIntervalRef.current);
-      if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
-      clearInterval(runnerInterval);
+      if (sampleIntervalRef.current) window.clearInterval(sampleIntervalRef.current);
+      clearInterval(runnerWatcher);
       map.remove();
-      mapRef.current = null;
     };
   }, [userLocated]);
 
-  return { mapContainer, status, errorMessage } as const;
+  return {
+    mapContainer,
+    status,
+    errorMessage,
+    userLocated,
+    triggerLocate: () => {
+      geolocateControlRef.current?.trigger();
+    },
+  } as const;
 }
 
-function emptyCollection(): GeoJSON.FeatureCollection {
-  return { type: "FeatureCollection", features: [] };
-}
+// function emptyCollection(): GeoJSON.FeatureCollection {
+//   return { type: "FeatureCollection", features: [] };
+// }
