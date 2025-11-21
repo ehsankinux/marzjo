@@ -17,8 +17,8 @@ import {
 type MapStatus = "loading" | "ready" | "error";
 
 // Adjust these values to control offset and pace:
-const SAMPLE_OFFSET_DISTANCE_METERS = 30; // e.g. 30 m from user
-const SAMPLE_OFFSET_BEARING_DEGREES = 45; // e.g. northeast
+// const SAMPLE_OFFSET_DISTANCE_METERS = 30; // e.g. 30 m from user
+// const SAMPLE_OFFSET_BEARING_DEGREES = 45; // e.g. northeast
 const RUNNER_SPEED_M_S = 1.4; // ~1.4 m/s = ~5 km/h
 
 export default function useMapView() {
@@ -30,7 +30,7 @@ export default function useMapView() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [userLocated, setUserLocated] = useState(false);
 
-  const sampleIndexRef = useRef(0);
+  // const sampleIndexRef = useRef(0);
   const sampleIntervalRef = useRef<number | null>(null);
   const offsetRouteRef = useRef<Array<[number, number]>>([]);
 
