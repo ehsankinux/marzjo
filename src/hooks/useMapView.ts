@@ -30,6 +30,7 @@ export default function useMapView() {
   const sampleIntervalRef = useRef<number | null>(null);
   const offsetRouteRef = useRef<Array<[number, number]>>([]);
   const loopCompletedRef = useRef(false); // track loop completion
+  const areaShownRef = useRef(false);
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -129,13 +130,13 @@ export default function useMapView() {
       const distancePerTick = RUNNER_SPEED_M_S * (tickMs / 1000);
 
       let traveled = 0;
-      let lastTraveled = 0;
+      // let lastTraveled = 0;
 
       const tick = () => {
         traveled += distancePerTick;
         if (traveled > lineLength) {
           traveled = 0; // loop again
-          loopCompletedRef.current = true; // mark first loop finished
+          loopCompletedRef.current = true; // first loop completed
         }
 
         const pointOnLine = turf.along(line, traveled / 1000, { units: "kilometers" });
@@ -150,13 +151,12 @@ export default function useMapView() {
         const trailSrc = map.getSource("sample-trail") as maplibregl.GeoJSONSource;
         trailSrc.setData(sliced as any);
 
-        // Show captured area only after first full loop
-        if (loopCompletedRef.current && lastTraveled < lineLength) {
+        // --- Show captured area only once after first full loop
+        if (loopCompletedRef.current && !areaShownRef.current) {
           const areaSrc = map.getSource("sample-area") as maplibregl.GeoJSONSource;
           areaSrc.setData(turf.featureCollection([SAMPLE_AREA_FEATURE]));
+          areaShownRef.current = true; // mark as shown
         }
-
-        lastTraveled = traveled;
       };
 
       tick();
