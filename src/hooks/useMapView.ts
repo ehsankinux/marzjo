@@ -17,8 +17,8 @@ import {
 
 type MapStatus = "loading" | "ready" | "error";
 
-const RUNNER1 = { offsetMeters: 30, bearing: 45, speedMs: 8 };
-const RUNNER2 = { offsetMeters: 55, bearing: 110, speedMs: 7 };
+const RUNNER1 = { offsetMeters: 30, bearing: 45, speedMs: 10 };
+const RUNNER2 = { offsetMeters: 55, bearing: 110, speedMs: 12 };
 const BUFFER_METERS = 12;
 const TICK_MS = 1000;
 
@@ -118,7 +118,7 @@ export default function useMapView() {
         id: "sample-trail-line-2",
         type: "line",
         source: "sample-trail-2",
-        paint: { "line-color": "#f97316", "line-width": 3.5, "line-opacity": 0.9 },
+        paint: { "line-color": "#62109F", "line-width": 3.5, "line-opacity": 0.9 },
       });
       map.addSource("sample-runner-2", { type: "geojson", data: turf.featureCollection([]) });
       map.addLayer({
@@ -127,7 +127,7 @@ export default function useMapView() {
         source: "sample-runner-2",
         paint: {
           "circle-radius": 7,
-          "circle-color": "#fb923c",
+          "circle-color": "#0046FF",
           "circle-stroke-width": 2,
           "circle-stroke-color": "#fff",
         },
@@ -137,7 +137,7 @@ export default function useMapView() {
         id: "sample-area-fill-2",
         type: "fill",
         source: "sample-area-2",
-        paint: { "fill-color": "#fed7aa", "fill-opacity": 0.55 },
+        paint: { "fill-color": "#8CE4FF", "fill-opacity": 0.55 },
       });
       map.addLayer({
         id: "sample-area-outline-2",
