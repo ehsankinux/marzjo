@@ -17,8 +17,8 @@ import {
 
 type MapStatus = "loading" | "ready" | "error";
 
-const RUNNER1 = { offsetMeters: 30, bearing: 45, speedMs: 1.6 };
-const RUNNER2 = { offsetMeters: 55, bearing: 110, speedMs: 1.4 };
+const RUNNER1 = { offsetMeters: 30, bearing: 45, speedMs: 4 };
+const RUNNER2 = { offsetMeters: 55, bearing: 110, speedMs: 5 };
 const BUFFER_METERS = 12;
 const TICK_MS = 1000;
 
