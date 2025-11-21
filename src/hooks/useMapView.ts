@@ -123,33 +123,31 @@ export default function useMapView() {
     };
 
     const computeOffsetGeometry = (userCoords: [number, number]) => {
-      // Use Turf to translate the sample area feature by a certain distance + bearing
-      const movedArea = turf.transformTranslate(
-        SAMPLE_AREA_FEATURE,
-        SAMPLE_OFFSET_DISTANCE_METERS / 1000, // turf distance in km
-        SAMPLE_OFFSET_BEARING_DEGREES,
-        { units: "kilometers" }
+      const [userLng, userLat] = userCoords;
+
+      // Translate SAMPLE_AREA_FEATURE to be offset from user location
+      const areaCentroid = turf.centroid(SAMPLE_AREA_FEATURE).geometry.coordinates as [number, number];
+      const dx = userLng - areaCentroid[0];
+      const dy = userLat - areaCentroid[1];
+
+      // Move area coordinates relative to user
+      const movedArea = turf.clone(SAMPLE_AREA_FEATURE);
+      movedArea.geometry.coordinates = (SAMPLE_AREA_FEATURE.geometry.coordinates as any).map((poly: any) =>
+        poly.map((coord: number[]) => [coord[0] + dx, coord[1] + dy])
       );
 
-      // Also offset the route:
-      const originalLine = turf.lineString(SAMPLE_ROUTE);
-      const movedLine = turf.transformTranslate(
-        originalLine,
-        SAMPLE_OFFSET_DISTANCE_METERS / 1000,
-        SAMPLE_OFFSET_BEARING_DEGREES,
-        { units: "kilometers" }
-      );
+      // Move route relative to user
+      const movedRoute = SAMPLE_ROUTE.map(([lng, lat]) => [lng + dx, lat + dy] as [number, number]);
+      offsetRouteRef.current = movedRoute;
 
-      // Extract the moved coordinates
-      const movedRouteCoords = movedLine.geometry.coordinates as any as Array<[number, number]>;
-      offsetRouteRef.current = movedRouteCoords;
-
-      // Update GeoJSON sources on map
+      // Update map sources
       const areaSrc = map.getSource("sample-area") as maplibregl.GeoJSONSource;
       areaSrc.setData(turf.featureCollection([movedArea]));
 
       const trailSrc = map.getSource("sample-trail") as maplibregl.GeoJSONSource;
-      trailSrc.setData(turf.lineString(movedRouteCoords));
+      trailSrc.setData(turf.lineString(movedRoute));
+
+      return movedRoute;
     };
 
     const startSampleRunner = () => {
