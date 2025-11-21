@@ -17,8 +17,8 @@ import {
 
 type MapStatus = "loading" | "ready" | "error";
 
-const RUNNER1 = { offsetMeters: 30, bearing: 45, speedMs: 4 };
-const RUNNER2 = { offsetMeters: 55, bearing: 110, speedMs: 5 };
+const RUNNER1 = { offsetMeters: 30, bearing: 45, speedMs: 8 };
+const RUNNER2 = { offsetMeters: 55, bearing: 110, speedMs: 7 };
 const BUFFER_METERS = 12;
 const TICK_MS = 1000;
 
@@ -33,6 +33,10 @@ export default function useMapView() {
 
   const offsetRoute1Ref = useRef<Array<[number, number]>>([]);
   const offsetRoute2Ref = useRef<Array<[number, number]>>([]);
+
+  // NEW: store moved area templates computed from the sample area feature
+  const offsetArea1Ref = useRef<Feature<Polygon | MultiPolygon> | null>(null);
+  const offsetArea2Ref = useRef<Feature<Polygon | MultiPolygon> | null>(null);
 
   const interval1Ref = useRef<number | null>(null);
   const interval2Ref = useRef<number | null>(null);
@@ -153,10 +157,11 @@ export default function useMapView() {
       const dx = dest[0] - centroid[0];
       const dy = dest[1] - centroid[1];
       const movedRoute = SAMPLE_ROUTE.map(([lng, lat]) => [lng + dx, lat + dy] as [number, number]);
-      const clonedArea = JSON.parse(JSON.stringify(SAMPLE_AREA_FEATURE)) as Feature<Polygon>;
+      const clonedArea = JSON.parse(JSON.stringify(SAMPLE_AREA_FEATURE)) as Feature<Polygon | MultiPolygon>;
       clonedArea.geometry.coordinates = (SAMPLE_AREA_FEATURE.geometry.coordinates as any).map((poly: any) =>
         poly.map((coord: number[]) => [coord[0] + dx, coord[1] + dy])
       );
+      // return both moved route and the moved area (exact alignment)
       return { movedRoute, movedArea: clonedArea };
     };
 
@@ -179,6 +184,12 @@ export default function useMapView() {
       prevTraveledRef.current = 0;
       loopDoneRef.current = false;
       areaShownRef.current = false;
+
+      // clear any previous interval for this runner to avoid duplicates
+      if (intervalRef.current != null) {
+        window.clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
 
       const tick = () => {
         // advance along the full route
@@ -205,13 +216,19 @@ export default function useMapView() {
         const completedLoopThisTick = prevTraveledRef.current > 0 && traveled === 0;
 
         if (completedLoopThisTick && !areaShownRef.current) {
-          // compute buffer for the *entire* route (not the slice)
-          const fullBuffer = turf.buffer(line, BUFFER_METERS, { units: "meters" }) as Feature<Polygon | MultiPolygon>;
+          // Prefer the exact moved sample area template (computed at geolocate time) to avoid offset issues.
+          const templateArea = runnerIndex === 1 ? offsetArea1Ref.current : offsetArea2Ref.current;
+
+          // Fallback: if template isn't available, compute a buffer around the route
+          const fullBuffer =
+            templateArea ?? (turf.buffer(line, BUFFER_METERS, { units: "meters" }) as Feature<Polygon | MultiPolygon>);
 
           if (runnerIndex === 1) {
-            // runner 1 finishes: capture its full buffered area once and show it
+            // runner 1 finishes: capture its full (template) area once and show it
             capturedArea1Ref.current = fullBuffer;
-            (map.getSource("sample-area-1") as maplibregl.GeoJSONSource).setData(turf.featureCollection([fullBuffer]));
+            (map.getSource("sample-area-1") as maplibregl.GeoJSONSource).setData(
+              turf.featureCollection([capturedArea1Ref.current])
+            );
             areaShown1Ref.current = true;
           } else {
             // runner 2 finishes: combine with runner1's captured area if present, and subtract intersection from area1
@@ -284,14 +301,25 @@ export default function useMapView() {
       (map.getSource("user-location") as maplibregl.GeoJSONSource).setData(turf.point(userCoords));
       setUserLocated(true);
 
-      const { movedRoute: r1 } = computeOffsetRoute(userCoords, RUNNER1.offsetMeters, RUNNER1.bearing);
-      const { movedRoute: r2 } = computeOffsetRoute(userCoords, RUNNER2.offsetMeters, RUNNER2.bearing);
+      const { movedRoute: r1, movedArea: a1 } = computeOffsetRoute(userCoords, RUNNER1.offsetMeters, RUNNER1.bearing);
+      const { movedRoute: r2, movedArea: a2 } = computeOffsetRoute(userCoords, RUNNER2.offsetMeters, RUNNER2.bearing);
       offsetRoute1Ref.current = r1;
       offsetRoute2Ref.current = r2;
+
+      // store the moved areas so we can show exact-aligned fills later
+      offsetArea1Ref.current = a1;
+      offsetArea2Ref.current = a2;
 
       (map.getSource("sample-trail-1") as maplibregl.GeoJSONSource).setData(turf.lineString(r1));
       (map.getSource("sample-trail-2") as maplibregl.GeoJSONSource).setData(turf.lineString(r2));
 
+      // reset any previous captured areas
+      capturedArea1Ref.current = null;
+      capturedArea2Ref.current = null;
+      (map.getSource("sample-area-1") as maplibregl.GeoJSONSource).setData(turf.featureCollection([]));
+      (map.getSource("sample-area-2") as maplibregl.GeoJSONSource).setData(turf.featureCollection([]));
+
+      // start runners (clear/replace previous intervals inside startRunner)
       startRunner(1);
       setTimeout(() => startRunner(2), 800);
       map.flyTo({ center: userCoords, zoom: 16, speed: 0.6 });
