@@ -44,6 +44,10 @@ export default function useMapView() {
   const capturedArea1Ref = useRef<Feature<Polygon | MultiPolygon> | null>(null);
   const capturedArea2Ref = useRef<Feature<Polygon | MultiPolygon> | null>(null);
 
+  // NEW: store previous tick's traveled distance to detect the completion transition
+  const prevTraveled1Ref = useRef<number>(0);
+  const prevTraveled2Ref = useRef<number>(0);
+
   useEffect(() => {
     if (!mapContainer.current) return;
 
@@ -169,29 +173,48 @@ export default function useMapView() {
       const loopDoneRef = runnerIndex === 1 ? loopDone1Ref : loopDone2Ref;
       const areaShownRef = runnerIndex === 1 ? areaShown1Ref : areaShown2Ref;
       const intervalRef = runnerIndex === 1 ? interval1Ref : interval2Ref;
+      const prevTraveledRef = runnerIndex === 1 ? prevTraveled1Ref : prevTraveled2Ref;
+
+      // reset previous traveled so completion detection works each time we (re)start
+      prevTraveledRef.current = 0;
+      loopDoneRef.current = false;
+      areaShownRef.current = false;
 
       const tick = () => {
+        // advance along the full route
         traveled += distancePerTick;
+
+        // if we exceeded the route length, wrap to 0 (loop)
         if (traveled > lineLength) {
-          traveled = 0;
+          // mark that a loop completed on this tick by virtue of wrapping
           loopDoneRef.current = true;
+          traveled = 0;
         }
 
-        const pointOnLine = turf.along(line, traveled / 1000, { units: "kilometers" });
+        // position (clamp to valid length if needed)
+        const alongDistanceKm = Math.min(Math.max(traveled / 1000, 0), lineLength / 1000);
+        const pointOnLine = turf.along(line, alongDistanceKm, { units: "kilometers" });
         const coords = pointOnLine.geometry.coordinates as [number, number];
 
+        // update runner marker and trail slice
         (map.getSource(`sample-runner-${runnerIndex}`) as maplibregl.GeoJSONSource).setData(turf.point(coords));
         const sliced = turf.lineSlice(turf.point(routeCoords[0]), turf.point(coords), line);
         (map.getSource(`sample-trail-${runnerIndex}`) as maplibregl.GeoJSONSource).setData(sliced as any);
 
-        if (loopDoneRef.current && !areaShownRef.current) {
+        // Detect the transition: previous tick had >0 traveled and now traveled === 0 => we just completed and returned to start
+        const completedLoopThisTick = prevTraveledRef.current > 0 && traveled === 0;
+
+        if (completedLoopThisTick && !areaShownRef.current) {
+          // compute buffer for the *entire* route (not the slice)
           const fullBuffer = turf.buffer(line, BUFFER_METERS, { units: "meters" }) as Feature<Polygon | MultiPolygon>;
 
           if (runnerIndex === 1) {
+            // runner 1 finishes: capture its full buffered area once and show it
             capturedArea1Ref.current = fullBuffer;
             (map.getSource("sample-area-1") as maplibregl.GeoJSONSource).setData(turf.featureCollection([fullBuffer]));
             areaShown1Ref.current = true;
           } else {
+            // runner 2 finishes: combine with runner1's captured area if present, and subtract intersection from area1
             const area1 = capturedArea1Ref.current;
             const area2 = capturedArea2Ref.current;
 
@@ -201,10 +224,14 @@ export default function useMapView() {
               > | null;
               if (intersection) {
                 try {
-                  const fc = turf.featureCollection([area1, intersection]);
-                  const newArea1 = turf.difference(fc) as Feature<Polygon | MultiPolygon> | null;
+                  const newArea1 = (turf as any).difference(area1 as any, intersection as any) as Feature<
+                    Polygon | MultiPolygon
+                  > | null;
                   if (newArea1) capturedArea1Ref.current = newArea1;
-                } catch {}
+                } catch (e) {
+                  // keep original area1 if difference fails
+                }
+                // union runner2's fullBuffer with existing captured area2 (if any)
                 capturedArea2Ref.current = area2
                   ? (turf.union(area2 as any, fullBuffer as any) as Feature<Polygon | MultiPolygon>)
                   : fullBuffer;
@@ -217,6 +244,7 @@ export default function useMapView() {
               capturedArea2Ref.current = fullBuffer;
             }
 
+            // update both layer sources (area1 may have been modified)
             (map.getSource("sample-area-2") as maplibregl.GeoJSONSource).setData(
               capturedArea2Ref.current ? turf.featureCollection([capturedArea2Ref.current]) : turf.featureCollection([])
             );
@@ -227,10 +255,15 @@ export default function useMapView() {
             areaShown2Ref.current = true;
           }
 
+          // mark that this runner's area has been shown for this run
           areaShownRef.current = true;
         }
+
+        // store traveled for next tick detection
+        prevTraveledRef.current = traveled;
       };
 
+      // run immediately and then every tick
       tick();
       intervalRef.current = window.setInterval(tick, TICK_MS);
     };
